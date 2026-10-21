@@ -14,6 +14,7 @@ norm() {
 }
 
 DEF=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)
+DEF_FULL=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
 
 # ---- 1. PHP binaries (Debian/Ubuntu, RHEL/Remi, cPanel EA, CloudLinux alt-php, Plesk, LiteSpeed, source builds)
 for b in /usr/bin/php* /usr/sbin/php-fpm* /usr/local/bin/php* /usr/local/sbin/php-fpm* \
@@ -26,8 +27,10 @@ for b in /usr/bin/php* /usr/sbin/php-fpm* /usr/local/bin/php* /usr/local/sbin/ph
   out=$(timeout 5 "$r" -v 2>/dev/null | head -1)
   [[ $out =~ PHP\ ([0-9]+)\.([0-9]+)\.([0-9]+) ]] || continue
   v="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-  FULL[$v]="$v.${BASH_REMATCH[3]}"
-  BINS[$v]+="$r "
+  full="$v.${BASH_REMATCH[3]}"
+  # keep every patch level seen (CLI and FPM builds of one branch can differ)
+  [[ " ${FULL[$v]:-} " == *" $full "* ]] || FULL[$v]+="${FULL[$v]:+ }$full"
+  BINS[$v]+="$r ($full) "
 done
 
 # ---- 2. PHP-FPM pools: map each listen socket/port -> version
@@ -120,16 +123,17 @@ done < <(find /home /var/www -maxdepth 4 -name .htaccess 2>/dev/null)
 
 # ---- Report
 hr() { printf '\n== %s ==\n' "$1"; }
+label() { local f=${FULL[$1]:-}; if [[ -n $f ]]; then echo "${f// /, }"; else echo "$1 (no binary found)"; fi; } # 7.2 -> 7.2.34
 mapfile -t ALL < <(printf '%s\n' "${!BINS[@]}" "${!FPM[@]}" "${!POOLS[@]}" "${!USES[@]}" | grep -v '^?*$' | sort -uV)
 
 echo "PHP audit: $(hostname) - $(date '+%F %T')"
 echo "Web servers found: ${WEB:-none}"
-echo "Default CLI php:   ${DEF:-none}"
+echo "Default CLI php:   ${DEF_FULL:-none}"
 
 hr "Installed PHP versions"
 for v in "${ALL[@]}"; do
   refs=$(printf '%s' "${USES[$v]:-}" | grep -c .)
-  printf 'PHP %-5s %-10s %s config reference(s)\n' "$v" "(${FULL[$v]:-no binary})" "$refs"
+  printf 'PHP %s - %s config reference(s)\n' "$(label "$v")" "$refs"
   printf '    fpm services: %s\n' "${FPM[$v]:-none}"
   [[ -n ${POOLS[$v]:-} ]] && printf '    fpm pools:    %s\n' "${POOLS[$v]}"
   [[ -n ${BINS[$v]:-}  ]] && printf '    binaries:     %s\n' "${BINS[$v]}"
@@ -139,16 +143,17 @@ hr "Usage by version"
 USED=() UNUSED=()
 for v in "${ALL[@]}"; do
   if [[ -n ${USES[$v]:-} ]]; then
-    USED+=("$v"); echo "PHP $v:"; printf '%s' "${USES[$v]}"
+    USED+=("$(label "$v")"); echo "PHP $(label "$v"):"; printf '%s' "${USES[$v]}"
     [[ -z ${FULL[$v]:-} ]] && echo "  !! referenced in config but no PHP $v binary was found"
   else
-    UNUSED+=("$v"); echo "PHP $v: not referenced by any web server config"
+    UNUSED+=("$(label "$v")"); echo "PHP $(label "$v"): not referenced by any web server config"
   fi
 done
 
 [[ -n $UNRESOLVED ]] && { hr "PHP references with unknown version"; printf '%s' "$UNRESOLVED"; }
 
 hr "Summary"
-echo "In use by web server:  ${USED[*]:-none}"
-echo "Not used by web server: ${UNUSED[*]:-none}"
+join() { local IFS=';'; local s="$*"; s=${s//;/ | }; echo "${s:-none}"; }
+echo "In use by web server:   $(join "${USED[@]}")"
+echo "Not used by web server: $(join "${UNUSED[@]}")"
 [[ ${#UNUSED[@]} -gt 0 ]] && echo "(Unused versions may still be used by cron jobs or CLI scripts - check before removing.)"

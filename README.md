@@ -40,8 +40,8 @@ Run it as root (`sudo`) so it can read every config file and `nginx -T` works.
 
 ## Report
 
-1. **Installed PHP versions**: full version, FPM services, pools, binaries, and the number of config references for each.
-2. **Usage by version**: each site (server name, config file, socket/port) grouped by PHP version. Versions nothing references are marked `not referenced`. Configs that point at a version with no installed binary are flagged.
+1. **Installed PHP versions**: full version (e.g. `7.2.34`; several if CLI and FPM builds differ), FPM services, pools, binaries, and the number of config references for each.
+2. **Usage by version**: each site, under its full PHP version, (server name, config file, socket/port) grouped by PHP version. Versions nothing references are marked `not referenced`. Configs that point at a version with no installed binary are flagged.
 3. **PHP references with unknown version**: handlers the script found but couldn't match to a version.
 4. **Summary**: versions in use, and versions not used by any web server.
 
