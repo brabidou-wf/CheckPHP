@@ -38,28 +38,44 @@ add_bin() {
   BINS[$BINV]+="$r "
 }
 
-# Record every [pool] in an FPM config file: listen socket/port -> version
-scan_pool() { # file, version
-  local f=$1 v=$2 pool l
+# Record every [pool] in an FPM config file: listen socket/port -> version.
+# A relative listen socket (Plesk: listen = php-fpm.sock) is relative to the pool's prefix=,
+# or to the install prefix when the pool sets none.
+scan_pool() { # file, version, install prefix (optional)
+  local f=$1 v=$2 base=${3:-} pool l p
   [[ -f $f && -z ${POOLFILE[$f]:-} ]] || return; POOLFILE[$f]=1
-  while read -r pool l; do
-    l=${l//\$pool/$pool}; l=${l/#\/var\/run\//\/run\/}
+  while read -r pool l p; do
+    l=${l//\$pool/$pool}; p=${p//\$pool/$pool}; [[ $p == - ]] && p=$base
+    [[ $l != /* && $l != *:* && ! $l =~ ^[0-9]+$ && -n $p ]] && l="${p%/}/$l"
+    l=${l/#\/var\/run\//\/run\/}
     LISTEN[$l]=$v
     [[ $l =~ ^([^:/]*:)?([0-9]+)$ ]] && LISTEN[port:${BASH_REMATCH[2]}]=$v
     POOLS[$v]+="$pool "
-  done < <(awk -F= '/^[ \t]*\[/ {s=$0; gsub(/[][ \t]/,"",s); next}
-                    /^[ \t]*listen[ \t]*=/ {l=$2; gsub(/[ \t]/,"",l); print (s?s:"?"), l}' "$f")
+  done < <(awk -F= 'function out() { if (l != "") print (s ? s : "?"), l, (p ? p : "-") }
+                    /^[ \t]*\[/ {out(); s=$0; gsub(/[][ \t]/,"",s); l=""; p=""; next}
+                    /^[ \t]*listen[ \t]*=/ {l=$2; gsub(/[ \t]/,"",l)}
+                    /^[ \t]*prefix[ \t]*=/ {p=$2; gsub(/[ \t]/,"",p)}
+                    END {out()}' "$f")
 }
 
 # A main php-fpm.conf: its own pools plus everything it include='s
 scan_conf() { # conf, version, fpm binary
-  local conf=$1 v=$2 exe=$3 inc p
+  local conf=$1 v=$2 exe=$3 inc p pre
+  pre=$(dirname "$(dirname "$exe")")
   [[ -n $conf && -f $conf ]] || return
-  scan_pool "$conf" "$v"
+  scan_pool "$conf" "$v" "$pre"
   while read -r inc; do # relative includes are relative to the install prefix
-    [[ $inc == /* ]] || inc="$(dirname "$(dirname "$exe")")/$inc"
-    for p in $inc; do scan_pool "$p" "$v"; done
+    [[ $inc == /* ]] || inc="$pre/$inc"
+    for p in $inc; do scan_pool "$p" "$v" "$pre"; done
   done < <(grep -oP '^\s*include\s*=\s*\K\S+' "$conf")
+}
+
+# php-fpm's own default config when it's started without --fpm-config / -y
+# (Plesk's shared units: /opt/plesk/php/8.2/sbin/php-fpm --nodaemonize -> /opt/plesk/php/8.2/etc/php-fpm.conf)
+default_conf() { # fpm binary
+  local c
+  c="$(dirname "$(dirname "${1:-/}")")/etc/php-fpm.conf"
+  [[ -n ${1:-} && -f $c ]] && echo "$c"
 }
 
 # Note for a running FPM master whose binary on disk was replaced after it started
@@ -88,7 +104,8 @@ if command -v systemctl >/dev/null; then
     pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null)
     note=""; [[ $pid =~ ^[1-9][0-9]*$ ]] && { PIDSEEN[$pid]=1; note=$(stale "$pid"); }
     FPM[$v]+="${unit%.service} ($sub${exe:+, $exe}$note); "
-    scan_conf "$(grep -oP '(--fpm-config|-y)[ =]\K[^ ;]+' <<<"$exec_line" | head -1)" "$v" "$exe"
+    conf=$(grep -oP '(--fpm-config|-y)[ =]\K[^ ;]+' <<<"$exec_line" | head -1)
+    scan_conf "${conf:-$(default_conf "$exe")}" "$v" "$exe"
   done < <(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null \
            | sed 's/^[^a-zA-Z0-9]*//' | grep -iE '^[^ ]*php[^ ]*fpm|^[^ ]*fpm[^ ]*php|^php-fpm')
 fi
@@ -102,7 +119,8 @@ for pid in $(pgrep -f '^php-fpm: master process' 2>/dev/null); do
   exe=$(readlink "/proc/$pid/exe" 2>/dev/null); exe=${exe% (deleted)}
   add_bin "$exe"; v=${BINV:-?}
   FPM[$v]+="pid $pid (not a systemd service, $exe$(stale "$pid")); "
-  scan_conf "$(tr '\0' ' ' <"/proc/$pid/cmdline" | grep -oP '\(\K[^)]+')" "$v" "$exe"
+  conf=$(tr '\0' ' ' <"/proc/$pid/cmdline" | grep -oP '\(\K[^)]+')
+  scan_conf "${conf:-$(default_conf "$exe")}" "$v" "$exe"
 done
 
 # ---- 3. Any remaining FPM pool files in the usual places (version guessed from the path)
@@ -114,7 +132,8 @@ for f in /etc/php/*/fpm/pool.d/*.conf /etc/php-fpm.d/*.conf /etc/opt/remi/php*/p
 done
 
 resolve() { # fastcgi target (socket path, host:port, port) -> version
-  local t=${1#unix:} v
+  local t=${1//[\"\']/} v # Plesk quotes it: fastcgi_pass "unix:/var/www/vhosts/system/x/php-fpm.sock"
+  t=${t#unix:}
   t=${t/#\/var\/run\//\/run\/}
   v=${LISTEN[$t]:-}
   [[ -z $v && $t =~ (^|:)([0-9]+)$ ]] && v=${LISTEN[port:${BASH_REMATCH[2]}]:-}
@@ -153,8 +172,16 @@ if [[ -d /etc/nginx ]]; then
   done
 fi
 
-# ---- 5. apache (Debian, RHEL, cPanel)
-APA=(/etc/apache2/apache2.conf /etc/apache2/sites-enabled/* /etc/apache2/conf-enabled/* /etc/apache2/mods-enabled/*
+# ---- 5. apache (Debian, RHEL, cPanel, Plesk)
+# Every file Apache actually loads (like nginx -T) - this picks up panel includes such as
+# Plesk's /etc/apache2/plesk.conf.d/vhosts/*.conf. Fall back to the usual places.
+APA=()
+for c in apache2ctl apachectl httpd; do
+  command -v "$c" >/dev/null || continue
+  mapfile -t APA < <("$c" -t -D DUMP_INCLUDES 2>/dev/null | sed -n 's/^[[:space:]]*([^)]*)[[:space:]]*\(\/.*\)$/\1/p' | sort -u)
+  [[ ${#APA[@]} -gt 0 ]] && break
+done
+[[ ${#APA[@]} -gt 0 ]] || APA=(/etc/apache2/apache2.conf /etc/apache2/sites-enabled/* /etc/apache2/conf-enabled/* /etc/apache2/mods-enabled/*
      /etc/apache2/conf.d/*.conf /etc/httpd/conf/*.conf /etc/httpd/conf.d/*.conf /etc/httpd/conf.modules.d/*.conf
      /usr/local/apache/conf/*.conf /etc/apache2/conf.d/userdata/*/*/*/*.conf)
 [[ -d /etc/apache2 || -d /etc/httpd || -d /usr/local/apache ]] && WEB+="apache "

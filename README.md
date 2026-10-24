@@ -33,10 +33,10 @@ Run it as root (`sudo`) so it can read every config file and `nginx -T` works.
 |---|---|
 | PHP binaries | `/usr/bin`, `/usr/sbin`, `/usr/local`, source builds in `/opt/php*`, Remi (`/opt/remi`), cPanel EA (`/opt/cpanel/ea-php*`), CloudLinux (`/opt/alt/php*`), Plesk (`/opt/plesk/php`), LiteSpeed (`/usr/local/lsws/lsphp*`) |
 | PHP-FPM services | Every `systemctl` unit with php + fpm in its name. The version comes from the binary its `ExecStart` runs, not from the unit name, so a unit like `php8.4.27-fpm` running `/opt/php-8.4.27/sbin/php-fpm` is reported correctly |
-| PHP-FPM pools | The `--fpm-config` each service starts with, plus its `include=` files, so each socket/port maps to the exact install that serves it. Then any leftover pool files in the usual places |
+| PHP-FPM pools | The `--fpm-config` each service starts with (or the install's own `etc/php-fpm.conf` when it starts without one, as Plesk's shared services do), plus its `include=` files, so each socket/port maps to the exact install that serves it. Relative sockets (`listen = php-fpm.sock`) are resolved against the pool's `prefix=`. Then any leftover pool files in the usual places |
 | Running FPM processes | `php-fpm: master` processes systemd doesn't manage (started by hand, supervisor, a panel). Also flags a master whose binary was upgraded since it started (**STALE**: restart to load the new version) |
 | nginx | `fastcgi_pass` in every file `nginx -T` loads (or `sites-enabled` / `conf.d`), including `upstream` blocks |
-| Apache | `proxy:unix:` / `fcgi://` handlers, `mod_php` (`libphp*.so`), `x-httpd-(ea-\|alt-)phpNN` handlers |
+| Apache | `proxy:unix:` / `fcgi://` handlers, `mod_php` (`libphp*.so`), `x-httpd-(ea-\|alt-)phpNN` handlers, in every file Apache loads (`apache2ctl -t -D DUMP_INCLUDES`, so panel includes like Plesk's `plesk.conf.d/vhosts` count), or the usual config dirs if that fails |
 | `.htaccess` | cPanel MultiPHP / CloudLinux handlers under `/home` and `/var/www` (4 levels deep) |
 
 ## Report
