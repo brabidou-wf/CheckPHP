@@ -53,3 +53,5 @@ Versions are grouped by the full version number (e.g. `8.4.7` and `8.4.27` are l
 - Site names are matched to PHP sockets per config file. This is accurate when each site has its own config file. If one file holds several server blocks, every site in it is listed together.
 - A version marked "not used by web server" may still be used by cron jobs or CLI scripts. Check before you remove it.
 - Needs bash 4+ and GNU grep (`grep -P`). Both are standard on modern Linux distros.
+
+
